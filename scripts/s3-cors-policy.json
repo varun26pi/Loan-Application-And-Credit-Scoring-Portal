@@ -1,0 +1,16 @@
+{
+  "CORSRules": [
+    {
+      "AllowedHeaders": ["*"],
+      "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+      "AllowedOrigins": ["*"] ,
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 3000
+    }
+  ]
+}
+//
+// To apply this policy, run:
+// aws s3api put-bucket-cors --bucket <your-bucket-name> --cors-configuration file://scripts/s3-cors-policy.json
+//
+// For production, restrict AllowedOrigins to your domain.

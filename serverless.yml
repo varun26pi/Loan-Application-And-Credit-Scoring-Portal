@@ -1,0 +1,221 @@
+service: finserve-loan-portal
+frameworkVersion: '3'
+
+# FIX 9:  Runtime changed from nodejs18.x to nodejs20.x
+#         (guide section 8.1 specifies Node.js 20.x for all Lambda functions)
+# FIX 10: Added all missing environment variables:
+#         REGION, COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID,
+#         SNS_TEXTRACT_COMPLETE_TOPIC, TEXTRACT_SNS_ROLE_ARN
+# FIX 11: NEXT_PUBLIC_API_STAGE removed — not a Lambda env var. Stage is
+#         set via the `stage:` key below and baked into the API Gateway invoke URL.
+
+provider:
+  name: aws
+  runtime: nodejs20.x                           # FIX 9: was nodejs18.x
+  region: ${env:NEXT_PUBLIC_AWS_REGION}
+  stage: dev
+  environment:
+    # ── Runtime / region ──────────────────────────────────────────────────────
+    REGION: ${env:NEXT_PUBLIC_AWS_REGION}        # FIX 10: was missing
+
+    # ── Cognito ───────────────────────────────────────────────────────────────
+    COGNITO_USER_POOL_ID: ${env:NEXT_PUBLIC_COGNITO_USER_POOL_ID}   # FIX 10: was missing
+    COGNITO_CLIENT_ID: ${env:NEXT_PUBLIC_COGNITO_CLIENT_ID}         # FIX 10: was missing
+
+    # ── DynamoDB tables (must match names created in guide Phase 4) ───────────
+    DYNAMODB_USERS_TABLE: ${env:DYNAMODB_USERS_TABLE}
+    DYNAMODB_APPLICATIONS_TABLE: ${env:DYNAMODB_APPLICATIONS_TABLE}
+    DYNAMODB_DOCUMENTS_TABLE: ${env:DYNAMODB_DOCUMENTS_TABLE}
+    DYNAMODB_AUDIT_TABLE: ${env:DYNAMODB_AUDIT_TABLE}
+    DYNAMODB_OTP_TABLE: ${env:DYNAMODB_OTP_TABLE}
+
+    # ── S3 ────────────────────────────────────────────────────────────────────
+    S3_BUCKET: ${env:NEXT_PUBLIC_S3_BUCKET}
+
+    # ── SNS topics (guide Phase 9) ────────────────────────────────────────────
+    SNS_APPLICATION_UPDATES_TOPIC: ${env:SNS_APPLICATION_UPDATES_TOPIC}
+    SNS_OTP_TOPIC: ${env:SNS_OTP_TOPIC}
+    SNS_TEXTRACT_COMPLETE_TOPIC: ${env:SNS_TEXTRACT_COMPLETE_TOPIC}  # FIX 10: was missing
+
+    # ── SES ───────────────────────────────────────────────────────────────────
+    SES_FROM_EMAIL: ${env:SES_FROM_EMAIL}
+    SES_REPLY_TO: ${env:SES_REPLY_TO}
+
+    # ── Textract async job (guide Phase 11) ───────────────────────────────────
+    TEXTRACT_SNS_ROLE_ARN: ${env:TEXTRACT_SNS_ROLE_ARN}             # FIX 10: was missing
+
+    # ── CloudTrail ────────────────────────────────────────────────────────────
+    CLOUDTRAIL_BUCKET: ${env:CLOUDTRAIL_BUCKET}
+
+  # VPC configuration — all Lambda functions run in private app subnets
+  # (guide section 8.1: subnets 10.0.11.0/24 and 10.0.12.0/24, SG: finserve-sg-app)
+  vpc:
+    securityGroupIds:
+      - sg-xxxxxxxxxxxxxxxxx   # Replace with finserve-sg-app security group ID
+    subnetIds:
+      - subnet-xxxxxxxx1a      # Replace with private app subnet ap-south-1a ID
+      - subnet-xxxxxxxx1b      # Replace with private app subnet ap-south-1b ID
+
+functions:
+  # ── Auth Lambda (guide section 8.1) ──────────────────────────────────────
+  auth:
+    handler: lambda/auth/index.handler
+    timeout: 10
+    memorySize: 256
+    events:
+      - http:
+          path: /auth/login
+          method: post
+          cors: true
+          authorizer: NONE
+      - http:
+          path: /auth/register
+          method: post
+          cors: true
+          authorizer: NONE
+      - http:
+          path: /auth/send-otp
+          method: post
+          cors: true
+          authorizer: NONE
+      - http:
+          path: /auth/verify-otp
+          method: post
+          cors: true
+          authorizer: NONE
+      - http:
+          path: /auth/logout
+          method: post
+          cors: true
+          authorizer: cognitoAuth
+
+  # ── Applications Lambda ────────────────────────────────────────────────────
+  applications:
+    handler: lambda/applications/index.handler
+    timeout: 15
+    memorySize: 256
+    events:
+      - http:
+          path: /applications
+          method: get
+          cors: true
+          authorizer: cognitoAuth
+      - http:
+          path: /applications
+          method: post
+          cors: true
+          authorizer: cognitoAuth
+      - http:
+          path: /applications/track
+          method: post
+          cors: true
+          authorizer: NONE
+      - http:
+          path: /applications/{id}
+          method: get
+          cors: true
+          authorizer: cognitoAuth
+      - http:
+          path: /applications/{id}
+          method: patch
+          cors: true
+          authorizer: cognitoAuth
+
+  # ── Documents Lambda ───────────────────────────────────────────────────────
+  documents:
+    handler: lambda/documents/index.handler
+    timeout: 30
+    memorySize: 512
+    events:
+      - http:
+          path: /documents/presigned-url
+          method: post
+          cors: true
+          authorizer: cognitoAuth
+      - http:
+          path: /documents/confirm
+          method: post
+          cors: true
+          authorizer: cognitoAuth
+      - http:
+          path: /documents/{id}/status
+          method: get
+          cors: true
+          authorizer: cognitoAuth
+      - http:
+          path: /documents/{id}/extracted
+          method: get
+          cors: true
+          authorizer: cognitoAuth
+      - http:
+          path: /documents/{id}/verify
+          method: patch
+          cors: true
+          authorizer: cognitoAuth
+
+  # ── Admin Lambda ───────────────────────────────────────────────────────────
+  admin:
+    handler: lambda/admin/index.handler
+    timeout: 20
+    memorySize: 256
+    events:
+      - http:
+          path: /admin/applications
+          method: get
+          cors: true
+          authorizer: cognitoAuth
+      - http:
+          path: /admin/applications/{id}/decision
+          method: post
+          cors: true
+          authorizer: cognitoAuth
+      - http:
+          path: /admin/reports
+          method: get
+          cors: true
+          authorizer: cognitoAuth
+
+  # ── Audit Lambda ───────────────────────────────────────────────────────────
+  audit:
+    handler: lambda/audit/index.handler
+    timeout: 30
+    memorySize: 256
+    events:
+      - http:
+          path: /admin/audit
+          method: get
+          cors: true
+          authorizer: cognitoAuth
+
+  # ── Textract Parser Lambda (SNS triggered — guide section 10.2) ─────────────
+  textractParser:
+    handler: lambda/textract-parser/index.handler
+    timeout: 60
+    memorySize: 512
+    events:
+      - sns:
+          arn: ${env:SNS_TEXTRACT_COMPLETE_TOPIC}
+          topicName: finserve-textract-complete
+
+  # ── Notifications Lambda (SNS triggered — guide section 10.3) ───────────────
+  notifications:
+    handler: lambda/notifications/index.handler
+    timeout: 15
+    memorySize: 256
+    events:
+      - sns:
+          arn: ${env:SNS_APPLICATION_UPDATES_TOPIC}
+          topicName: finserve-app-updates
+
+# Cognito authorizer definition
+resources:
+  Resources:
+    cognitoAuth:
+      Type: AWS::ApiGateway::Authorizer
+      Properties:
+        Name: finserve-cognito-auth
+        Type: COGNITO_USER_POOLS
+        IdentitySource: method.request.header.Authorization
+        RestApiId: !Ref ApiGatewayRestApi
+        ProviderARNs:
+          - !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${env:NEXT_PUBLIC_COGNITO_USER_POOL_ID}"
