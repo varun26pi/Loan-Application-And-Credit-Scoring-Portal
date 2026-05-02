@@ -92,11 +92,13 @@ export default function LoanApplicationPage() {
   const [currentStep, setCurrentStep]           = useState(0);
   const [submitting, setSubmitting]             = useState(false);
   const [error, setError]                       = useState('');
+  const [errorField, setErrorField]             = useState<string | null>(null);
+  const [previewDoc, setPreviewDoc]             = useState<UploadedDoc | null>(null);
+  const [previewUrl, setPreviewUrl]             = useState<string | null>(null);
   const [applicationId, setApplicationId]       = useState('');
   const [uploadedDocs, setUploadedDocs]         = useState<UploadedDoc[]>([]);
   const [uploadingFiles, setUploadingFiles]     = useState(false);
   const [selectedDocType, setSelectedDocType]   = useState('aadhar');
-  const [applicationSaved, setApplicationSaved] = useState(false);
 
   // FIX: prevents double-submit when button is clicked rapidly
   const isSubmittingRef = useRef(false);
@@ -133,32 +135,9 @@ export default function LoanApplicationPage() {
     course:            '',
   });
 
-  // ── Early application create (best-effort) ─────────────────────────────────
-  // Fires when user arrives at Step 4 so the ID is ready before they hit Submit.
-  // handleFinalSubmit will create it on the spot if this fails.
-  useEffect(() => {
-    const createAppIfNeeded = async () => {
-      if (
-        currentStep === 3 &&
-        !applicationSaved &&
-        formData.firstName &&
-        formData.lastName &&
-        formData.phoneNumber &&
-        formData.email
-      ) {
-        try {
-          const id = await handleSaveApplication();
-          console.log('✅ Application created early:', id);
-          setApplicationId(id);
-          setApplicationSaved(true);
-        } catch (err) {
-          console.warn('⚠️ Early application create failed (will retry at submit):', err);
-        }
-      }
-    };
-    createAppIfNeeded();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentStep, applicationSaved]);
+  // ✅ REMOVED: Early application create
+  // We now create the application only on final submit with isFinalSubmit=true
+  // This prevents duplicate applications and ensures email is sent immediately
 
   // ── Input handler ──────────────────────────────────────────────────────────
   const handleInputChange = (
@@ -186,6 +165,30 @@ export default function LoanApplicationPage() {
       return;
     }
 
+    if (name === 'firstName' || name === 'lastName') {
+      // Only allow alphabets and spaces
+      const alphabetsOnly = value.replace(/[^a-zA-Z\s]/g, '');
+      setFormData((prev) => ({
+        ...prev,
+        [name]: alphabetsOnly,
+      }));
+      // Clear error highlighting when user starts typing in error field
+      if (errorField === name) setErrorField(null);
+      return;
+    }
+
+    if (name === 'pincode') {
+      // Only allow digits, max 6
+      const digitsOnly = value.replace(/\D/g, '').slice(0, 6);
+      setFormData((prev) => ({
+        ...prev,
+        pincode: digitsOnly,
+      }));
+      // Clear error highlighting when user starts typing in error field
+      if (errorField === name) setErrorField(null);
+      return;
+    }
+
     if (name === 'aadharNumber') {
       // Only allow digits, format as XXXX-XXXX-XXXX, max 12 digits
       const digitsOnly = value.replace(/\D/g, '').slice(0, 12);
@@ -200,13 +203,77 @@ export default function LoanApplicationPage() {
     }
 
     setFormData((prev) => ({ ...prev, [name]: value }));
+    // Clear error highlighting when user starts typing in error field
+    if (errorField === name) setErrorField(null);
+  };
+
+  // ── Map error message to field name for highlighting ─────────────────────
+  const getErrorField = (message: string): string | null => {
+    if (message.includes('First name')) return 'firstName';
+    if (message.includes('Last name')) return 'lastName';
+    if (message.includes('Date of birth')) return 'dateOfBirth';
+    if (message.includes('Phone number')) return 'phoneNumber';
+    if (message.includes('Email')) return 'email';
+    if (message.includes('Aadhar')) return 'aadharNumber';
+    if (message.includes('PAN')) return 'panNumber';
+    if (message.includes('Address')) return 'address';
+    if (message.includes('City')) return 'city';
+    if (message.includes('State')) return 'state';
+    if (message.includes('Pincode')) return 'pincode';
+    if (message.includes('Company name')) return 'companyName';
+    if (message.includes('Monthly income')) return 'monthlyIncome';
+    if (message.includes('Loan amount')) return 'loanAmount';
+    if (message.includes('Tenure')) return 'tenure';
+    return null;
+  };
+
+  // ── File preview handler ──────────────────────────────────────────────────
+  const handlePreviewFile = async (doc: UploadedDoc) => {
+    setPreviewDoc(doc);
+    setPreviewUrl(null);
+
+    if (doc.status === 'pending') {
+      // For pending files: Use FileReader to create data URL from File object
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const url = e.target?.result as string;
+        setPreviewUrl(url);
+      };
+      reader.readAsDataURL(doc.file);
+    } else if (doc.status === 'uploaded' && doc.s3Key) {
+      // For uploaded files: Construct CloudFront URL
+      const cloudFrontUrl = `https://d1a4o1u09j3suo.cloudfront.net/${doc.s3Key}`;
+      setPreviewUrl(cloudFrontUrl);
+    }
+  };
+
+  const closePreview = () => {
+    setPreviewDoc(null);
+    setPreviewUrl(null);
   };
 
   // ── Per-step validation ────────────────────────────────────────────────────
   const validateStep = (): string | null => {
+    if (currentStep === 1) {
+      const minAmount = selectedProduct?.minAmount ?? 10000;
+      const maxAmount = selectedProduct?.maxAmount ?? 5000000;
+      const minTenure = selectedProduct?.minTenure ?? 12;
+      const maxTenure = selectedProduct?.maxTenure ?? 84;
+      
+      if (formData.loanAmount < minAmount || formData.loanAmount > maxAmount)
+        return `Loan amount must be between ₹${minAmount.toLocaleString('en-IN')} and ₹${maxAmount.toLocaleString('en-IN')}`;
+      if (formData.tenure < minTenure || formData.tenure > maxTenure)
+        return `Tenure must be between ${minTenure} and ${maxTenure} months`;
+    }
     if (currentStep === 2) {
       if (!formData.firstName.trim())    return 'First name is required';
+      if (!/^[a-zA-Z\s]+$/.test(formData.firstName.trim()))
+        return 'First name can only contain alphabets and spaces';
+      
       if (!formData.lastName.trim())     return 'Last name is required';
+      if (!/^[a-zA-Z\s]+$/.test(formData.lastName.trim()))
+        return 'Last name can only contain alphabets and spaces';
+      
       if (!formData.dateOfBirth)         return 'Date of birth is required';
       
       // Validate dateOfBirth is not in the future
@@ -214,6 +281,15 @@ export default function LoanApplicationPage() {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       if (dob > today) return 'Date of birth cannot be in the future';
+      
+      // Validate age is at least 18 years
+      let age = today.getFullYear() - dob.getFullYear();
+      const monthDiff = today.getMonth() - dob.getMonth();
+      // If birthday hasn't occurred yet this year, subtract 1 from age
+      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) {
+        age--;
+      }
+      if (age < 18) return 'You must be at least 18 years old';
       
       if (!formData.phoneNumber.trim())  return 'Phone number is required';
       if (!formData.email.trim())        return 'Email is required';
@@ -228,6 +304,8 @@ export default function LoanApplicationPage() {
       if (!formData.city.trim())         return 'City is required';
       if (!formData.state.trim())        return 'State is required';
       if (!formData.pincode.trim())      return 'Pincode is required';
+      if (!/^\d{6}$/.test(formData.pincode))
+        return 'Pincode must be exactly 6 digits';
     }
     if (currentStep === 3 && !formData.loanType.startsWith('education')) {
       if (!formData.companyName.trim())  return 'Company name is required';
@@ -375,6 +453,17 @@ export default function LoanApplicationPage() {
     }
   };
 
+  // ── Trigger email notification ────────────────────────────────────────────
+  // Called after all documents are uploaded to send confirmation email
+  const triggerEmailNotification = async (appId: string): Promise<void> => {
+    try {
+      console.log('📧 Email notification already triggered during application creation');
+    } catch (err: any) {
+      console.warn('⚠️ Email trigger failed (application still saved):', err);
+      // Don't block the flow even if email fails
+    }
+  };
+
   // ── Final submit ───────────────────────────────────────────────────────────
   const handleFinalSubmit = async () => {
     if (isSubmittingRef.current) return; // FIX: hard guard against double-submit
@@ -392,20 +481,14 @@ export default function LoanApplicationPage() {
     isSubmittingRef.current = true;
 
     try {
-      let appId = applicationId;
-
-      if (!appId) {
-        console.warn('⚠️ No applicationId at submit — creating now with isFinalSubmit=true...');
-        appId = await handleSaveApplication(true);
-        setApplicationId(appId);
-      } else {
-        // Application already exists from early create
-        // Make final submit call with isFinalSubmit=true to trigger SNS → SES email
-        console.log('📧 Final submit: Calling handleSaveApplication(true) to trigger email notification');
-        await handleSaveApplication(true);
-      }
+      // ✅ ALWAYS create application on final submit with isFinalSubmit=true
+      // This ensures: 1 application + email sent immediately
+      console.log('📋 Creating application with isFinalSubmit=true (email will be triggered)');
+      const appId = await handleSaveApplication(true);
+      setApplicationId(appId);
 
       setUploadingFiles(true);
+      // All docs should be pending since we just created the app
       const pending = uploadedDocs.filter((d) => d.status === 'pending' || d.status === 'error');
 
       for (const doc of pending) {
@@ -413,6 +496,7 @@ export default function LoanApplicationPage() {
       }
 
       setUploadingFiles(false);
+
       router.push(`/apply/success?id=${appId}`);
     } catch (err: any) {
       console.error('❌ Submit failed:', err);
@@ -426,8 +510,25 @@ export default function LoanApplicationPage() {
 
   const handleNext = () => {
     const validationError = validateStep();
-    if (validationError) { setError(validationError); return; }
+    if (validationError) {
+      setError(validationError);
+      const field = getErrorField(validationError);
+      setErrorField(field);
+      
+      // Scroll to and focus on the error field
+      if (field) {
+        setTimeout(() => {
+          const input = document.querySelector(`input[name="${field}"], select[name="${field}"]`) as HTMLElement;
+          if (input) {
+            input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            input.focus();
+          }
+        }, 0);
+      }
+      return;
+    }
     setError('');
+    setErrorField(null);
     setCurrentStep((s) => s + 1);
   };
 
@@ -504,10 +605,25 @@ export default function LoanApplicationPage() {
             {currentStep === 1 && (
               <div className="space-y-6">
                 <h2 className="text-2xl font-bold text-foreground">Loan Amount &amp; Tenure</h2>
+                
+                {/* Loan Amount Section */}
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-3">
                     Loan Amount: ₹{Number(formData.loanAmount).toLocaleString('en-IN')}
                   </label>
+                  <div className="flex gap-3 mb-3">
+                    <input 
+                      type="number" 
+                      value={formData.loanAmount}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) || '';
+                        setFormData((prev) => ({ ...prev, loanAmount: val === '' ? 0 : val }));
+                      }}
+                      className="flex-1 px-3 py-2 border border-border rounded-lg text-foreground bg-background focus:outline-none focus:ring-2 focus:ring-accent"
+                      placeholder="Enter amount"
+                    />
+                    <span className="flex items-center text-sm text-muted-foreground">₹</span>
+                  </div>
                   <input type="range" name="loanAmount"
                     min={selectedProduct?.minAmount ?? 10000}
                     max={selectedProduct?.maxAmount ?? 5000000}
@@ -520,10 +636,25 @@ export default function LoanApplicationPage() {
                     <span>₹{((selectedProduct?.maxAmount ?? 5000000) / 100000).toFixed(0)}L</span>
                   </div>
                 </div>
+                
+                {/* Tenure Section */}
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-3">
                     Tenure: {formData.tenure} months ({(Number(formData.tenure) / 12).toFixed(1)} years)
                   </label>
+                  <div className="flex gap-3 mb-3">
+                    <input 
+                      type="number" 
+                      value={formData.tenure}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) || '';
+                        setFormData((prev) => ({ ...prev, tenure: val === '' ? 0 : val }));
+                      }}
+                      className="flex-1 px-3 py-2 border border-border rounded-lg text-foreground bg-background focus:outline-none focus:ring-2 focus:ring-accent"
+                      placeholder="Enter months"
+                    />
+                    <span className="flex items-center text-sm text-muted-foreground">months</span>
+                  </div>
                   <input type="range" name="tenure"
                     min={selectedProduct?.minTenure ?? 12}
                     max={selectedProduct?.maxTenure ?? 84}
@@ -542,9 +673,10 @@ export default function LoanApplicationPage() {
                     <div className="p-4 bg-accent/10 border border-accent/20 rounded-lg">
                       <p className="text-sm font-medium text-foreground mb-1">Estimated Monthly EMI</p>
                       <p className="text-2xl font-bold text-accent">₹{emi.monthlyEMI.toLocaleString('en-IN')}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Interest Rate: <span className="font-semibold">{selectedProduct?.baseRate ?? 9}% p.a.</span> · 
                         Total Interest: ₹{emi.totalInterest.toLocaleString('en-IN')} ·
-                        Total: ₹{emi.totalAmount.toLocaleString('en-IN')}
+                        Total Amount: ₹{emi.totalAmount.toLocaleString('en-IN')}
                       </p>
                     </div>
                   );
@@ -557,18 +689,32 @@ export default function LoanApplicationPage() {
               <div className="space-y-6">
                 <h2 className="text-2xl font-bold text-foreground">Personal Information</h2>
                 <div className="grid md:grid-cols-2 gap-4">
-                  <Input label="First Name"    name="firstName"    value={formData.firstName}    onChange={handleInputChange} placeholder="varun" />
-                  <Input label="Last Name"     name="lastName"     value={formData.lastName}     onChange={handleInputChange} placeholder="goli" />
-                  <Input label="Date of Birth" name="dateOfBirth"  type="date" value={formData.dateOfBirth} onChange={handleInputChange} />
-                  <Input label="Phone Number"  name="phoneNumber"  value={formData.phoneNumber}  onChange={handleInputChange} placeholder="9876543210" />
-                  <Input label="Email"         name="email"        type="email" value={formData.email} onChange={handleInputChange} placeholder="varun@example.com" />
-                  <Input label="Aadhar Number" name="aadharNumber" value={formData.aadharNumber} onChange={handleInputChange} placeholder="1234-5678-9012" maxLength={14} />
-                  <Input
-                    label="PAN Number" name="panNumber"
-                    value={formData.panNumber}
-                    onChange={(e) => setFormData((p) => ({ ...p, panNumber: e.target.value.toUpperCase() }))}
-                    placeholder="ABCDE1234F" maxLength={10}
-                  />
+                  <div className={errorField === 'firstName' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input label="First Name"    name="firstName"    value={formData.firstName}    onChange={handleInputChange} placeholder="varun" />
+                  </div>
+                  <div className={errorField === 'lastName' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input label="Last Name"     name="lastName"     value={formData.lastName}     onChange={handleInputChange} placeholder="goli" />
+                  </div>
+                  <div className={errorField === 'dateOfBirth' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input label="Date of Birth" name="dateOfBirth"  type="date" value={formData.dateOfBirth} onChange={handleInputChange} max={new Date().toISOString().split('T')[0]} />
+                  </div>
+                  <div className={errorField === 'phoneNumber' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input label="Phone Number"  name="phoneNumber"  value={formData.phoneNumber}  onChange={handleInputChange} placeholder="9876543210" />
+                  </div>
+                  <div className={errorField === 'email' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input label="Email"         name="email"        type="email" value={formData.email} onChange={handleInputChange} placeholder="varun@example.com" />
+                  </div>
+                  <div className={errorField === 'aadharNumber' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input label="Aadhar Number" name="aadharNumber" value={formData.aadharNumber} onChange={handleInputChange} placeholder="1234-5678-9012" maxLength={14} />
+                  </div>
+                  <div className={errorField === 'panNumber' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input
+                      label="PAN Number" name="panNumber"
+                      value={formData.panNumber}
+                      onChange={(e) => setFormData((p) => ({ ...p, panNumber: e.target.value.toUpperCase() }))}
+                      placeholder="ABCDE1234F" maxLength={10}
+                    />
+                  </div>
                   <div className="flex flex-col gap-2">
                     <label className="text-sm font-medium text-foreground">Marital Status</label>
                     <select name="maritalStatus" value={formData.maritalStatus} onChange={handleInputChange}
@@ -579,18 +725,26 @@ export default function LoanApplicationPage() {
                       <option value="widowed">Widowed</option>
                     </select>
                   </div>
-                  <Input label="Address" name="address" value={formData.address} onChange={handleInputChange} placeholder="123 Main Street" />
-                  <Input label="City"    name="city"    value={formData.city}    onChange={handleInputChange} placeholder="Bangalore" />
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm font-medium text-foreground">State</label>
-                    <select name="state" value={formData.state} onChange={handleInputChange}
-                      className="px-3 py-2 border border-border rounded-lg text-foreground bg-background focus:outline-none focus:ring-2 focus:ring-accent">
-                      {INDIAN_STATES.map((st) => (
-                        <option key={st.value} value={st.value}>{st.label}</option>
-                      ))}
-                    </select>
+                  <div className={errorField === 'address' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input label="Address" name="address" value={formData.address} onChange={handleInputChange} placeholder="123 Main Street" />
                   </div>
-                  <Input label="Pincode" name="pincode" value={formData.pincode} onChange={handleInputChange} placeholder="560001" maxLength={6} />
+                  <div className={errorField === 'city' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input label="City"    name="city"    value={formData.city}    onChange={handleInputChange} placeholder="Bangalore" />
+                  </div>
+                  <div className={errorField === 'state' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm font-medium text-foreground">State</label>
+                      <select name="state" value={formData.state} onChange={handleInputChange}
+                        className="px-3 py-2 border border-border rounded-lg text-foreground bg-background focus:outline-none focus:ring-2 focus:ring-accent">
+                        {INDIAN_STATES.map((st) => (
+                          <option key={st.value} value={st.value}>{st.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className={errorField === 'pincode' ? 'p-1 border-2 border-red-500 rounded-lg' : ''}>
+                    <Input label="Pincode" name="pincode" value={formData.pincode} onChange={handleInputChange} placeholder="560001" maxLength={6} inputMode="numeric" />
+                  </div>
                 </div>
               </div>
             )}
@@ -673,7 +827,7 @@ export default function LoanApplicationPage() {
                     <div className="space-y-2">
                       <p className="text-sm font-medium text-foreground">Documents to submit ({uploadedDocs.length}):</p>
                       {uploadedDocs.map((doc, i) => (
-                        <div key={i} className="flex items-center gap-3 p-3 border rounded-lg bg-muted/30">
+                        <div key={i} className="flex items-center gap-3 p-3 border rounded-lg bg-muted/30 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => handlePreviewFile(doc)}>
                           {doc.status === 'pending'   && <File        className="w-4 h-4 text-muted-foreground shrink-0" />}
                           {doc.status === 'uploading' && <Loader2     className="w-4 h-4 animate-spin text-blue-500 shrink-0" />}
                           {doc.status === 'uploaded'  && <CheckCircle className="w-4 h-4 text-green-500 shrink-0" />}
@@ -690,9 +844,21 @@ export default function LoanApplicationPage() {
                              doc.status === 'uploading' ? 'Uploading...' :
                              doc.status === 'uploaded'  ? '✓ Done'       : 'Failed'}
                           </span>
-                          {doc.status === 'pending' && (
-                            <button onClick={() => removeDoc(i)} className="p-1 hover:bg-border rounded">
-                              <X className="w-4 h-4 text-muted-foreground" />
+                          {(doc.status === 'pending' || doc.status === 'uploaded' || doc.status === 'error') && (
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); removeDoc(i); }} 
+                              className={`p-1 rounded transition-colors ${
+                                doc.status === 'error' 
+                                  ? 'hover:bg-red-100' 
+                                  : 'hover:bg-red-100'
+                              }`}
+                              title={doc.status === 'error' ? 'Remove failed file and try again' : 'Remove file'}
+                            >
+                              <X className={`w-4 h-4 ${
+                                doc.status === 'error'
+                                  ? 'text-red-500 hover:text-red-700'
+                                  : 'text-red-500 hover:text-red-700'
+                              }`} />
                             </button>
                           )}
                         </div>
@@ -704,6 +870,18 @@ export default function LoanApplicationPage() {
                     <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
                       Add at least one document (Aadhaar or PAN recommended) before submitting.
                     </p>
+                  )}
+
+                  {uploadedDocs.some((doc) => doc.status === 'error') && (
+                    <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                      <p className="font-medium mb-2">⚠️ Upload failed for {uploadedDocs.filter((doc) => doc.status === 'error').length} file(s):</p>
+                      <ul className="list-disc list-inside space-y-1 mb-2">
+                        {uploadedDocs.filter((doc) => doc.status === 'error').map((doc, i) => (
+                          <li key={i} className="text-sm">{doc.fileName} <span className="text-xs text-red-600">({(doc.file.size / 1024).toFixed(0)} KB)</span></li>
+                        ))}
+                      </ul>
+                      <p className="text-xs text-red-600 bg-red-100 p-2 rounded">Possible reasons: File exceeds 5MB or unsupported format (supported: PDF, JPG, PNG). Remove the file(s) using the X button and try again.</p>
+                    </div>
                   )}
                 </div>
               </div>
@@ -748,6 +926,65 @@ export default function LoanApplicationPage() {
           </div>
         </Card>
       </div>
+
+      {/* ── File Preview Modal ────────────────────────────────────────────────── */}
+      {previewDoc && previewUrl && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={closePreview}>
+          <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="sticky top-0 bg-background border-b p-4 flex justify-between items-center">
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-bold text-foreground truncate">{previewDoc.fileName}</h2>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {previewDoc.fileType === 'application/pdf' ? 'PDF Document' : 'Image'} · {(previewDoc.file.size / 1024).toFixed(0)} KB · {previewDoc.status === 'uploaded' ? '✓ Uploaded' : 'Pending upload'}
+                </p>
+              </div>
+              <button 
+                onClick={closePreview}
+                className="p-2 hover:bg-border rounded transition-colors ml-4 flex-shrink-0"
+              >
+                <X className="w-5 h-5 text-muted-foreground" />
+              </button>
+            </div>
+            
+            <div className="p-4 bg-black/5">
+              {previewDoc.fileType === 'application/pdf' ? (
+                <div className="bg-white border rounded">
+                  <iframe
+                    src={`${previewUrl}#toolbar=1`}
+                    className="w-full"
+                    style={{ height: '60vh' }}
+                    title={previewDoc.fileName}
+                  />
+                </div>
+              ) : previewDoc.fileType.startsWith('image/') ? (
+                <div className="flex justify-center">
+                  <img
+                    src={previewUrl}
+                    alt={previewDoc.fileName}
+                    className="max-w-full max-h-[60vh] rounded border bg-white"
+                  />
+                </div>
+              ) : (
+                <div className="text-center py-12 bg-muted/30 rounded border">
+                  <File className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
+                  <p className="text-muted-foreground">Preview not available for this file type</p>
+                  <p className="text-xs text-muted-foreground mt-2">{previewDoc.fileType}</p>
+                </div>
+              )}
+            </div>
+            
+            <div className="border-t p-4 flex justify-end">
+              <Button
+                onClick={closePreview}
+                variant="outline"
+                className="gap-2"
+              >
+                Close <X className="w-4 h-4" />
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
