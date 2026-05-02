@@ -153,7 +153,9 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <StatusBadge status={app.status} />
+                    <StatusBadge variant={app.status as 'pending' | 'approved' | 'rejected' | 'processing' | 'conditional'}>
+                      {app.status.charAt(0).toUpperCase() + app.status.slice(1)}
+                    </StatusBadge>
                     <Button
                       variant="ghost"
                       size="sm"
