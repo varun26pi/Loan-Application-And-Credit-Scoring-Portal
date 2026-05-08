@@ -1,5 +1,3 @@
-## [Visit Website](https://nbfcfinserve.me/)
-
 # FinServe - Loan Application & Credit Scoring Portal
 
 [![AWS](https://img.shields.io/badge/AWS-Cloud%20Native-orange)](https://aws.amazon.com/)
